@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+
+/*jshint bitwise:false*/
+var when = require('when')
+var terminal = require('../lib/terminal')
+var HeadlessTerminal = require('headless-terminal')
+var ScreenBuffer = require('screen-buffer')
+var EventEmitter = require('events').EventEmitter
+
+var io = require('socket.io-client')
+var command = process.argv.slice(2)
+
+if (command.length === 0) {
+  command = [process.env.SHELL]
+}
+
+var server = process.env.LIVETTY_SERVER || 'https://livetty.herokuapp.com/'
+
+when(connect(server))
+.then(function(socket) {
+
+  var name = process.env.LIVETTY_ROOM
+  var info = new EventEmitter()
+
+  info.viewers = 0
+  info.status = 'connecting'
+
+  socket.on('viewers', function(count) {
+    info.viewers = count
+    info.emit('update')
+  })
+
+  log('Creating room...')
+  return createRoom(name)
+    .then(function(info) {
+      log('Room created!')
+      log('>>> URL: ' + server.replace(/\/$/, '') + '/' + info.name + ' <<<')
+      name = info.name
+      return pressEnter()
+    })
+    .then(function() {
+      info.status = 'connected'
+      info.room = name
+      function setStatus(text) {
+        info.status = text
+        info.emit('update')
+      }
+      socket.on('connect', function() {
+        setStatus('re-joining')
+        socket.emit('message', { command: 'broadcast', room: name })
+        socket.once('room_created', function(room) {
+          setStatus('connected')
+        })
+        socket.once('room_exists', function() {
+          setStatus('DISCONECTED')
+        })
+      })
+      socket.on('disconnect', function() {
+        setStatus('DISCONECTED')
+        info.emit('update')
+      })
+      return info
+    })
+    .then(function(info) {
+      return record(socket, info)
+    })
+    .finally(function(e) {
+      socket.disconnect()
+      throw e
+    })
+
+  function createRoom(name) {
+    var defer = when.defer()
+    socket.emit('message', { command: 'broadcast', room: name })
+    socket.once('room_created', function(room) {
+      defer.resolve(room)
+    })
+    socket.once('room_exists', function() {
+      defer.reject(new Error('A room with this name already exists. Please select another name.'))
+    })
+    return defer.promise
+  }
+
+})
+.catch(function(e) {
+  log('Error:', e.stack)
+})
+
+
+function pressEnter() {
+
+  var defer = when.defer()
+  log('...')
+  log('Please press "ENTER" to start broadcasting!')
+  process.stdin.resume()
+  process.stdin.on('data', listener)
+
+  return defer.promise
+
+  function listener(buffer) {
+    var string = buffer.toString('utf-8')
+    if (string.indexOf('\n') > -1) {
+      process.stdin.removeListener('data', listener)
+      defer.resolve()
+    }
+  }
+
+}
+
+
+function connect(server) {
+  return when.promise(function(resolve, reject) {
+    var socket = io.connect(server)
+    log('Connecting to ' + server + '...')
+    socket.once('connect', function() {
+      log('Connected to ' + server + '!')
+      resolve(socket)
+    })
+    socket.once('error', function() {
+      log('Unable to connect to server, ' + server + '!')
+    })
+  })
+}
+
+var CSI = '\x1b['
+
+function csi() {
+  var args = [].slice.call(arguments)
+  var command = args.pop()
+  return CSI + args.join(';') + command
+}
+
+function drawHeader(text) {
+  process.stdout.write(csi(1, 1, 'H') + csi(2, 'K') + csi(48, 5, 25, 38, 5, 123, 'm'))
+  for (var j = 0; j < process.stdout.columns; j ++) {
+    process.stdout.write(' ')
+  }
+  process.stdout.write(csi(1, 1, 'H'))
+  process.stdout.write(text + csi('m'))
+}
+
+function pluralize(count, text) {
+  return count + ' ' + text + (count == 1 ? '' : 's')
+}
+
+function display(child, buffer, info) {
+  
+  var oldDirty = buffer.ondirty
+  var dirty = {}
+  var timeout = null
+
+  buffer.ondirty = function(row) {
+    oldDirty.apply(this, arguments)
+    dirty[row] = true
+    if (timeout == null) timeout = setTimeout(update, 10)
+  }
+
+  function header() {
+    drawHeader('livetty ' + info.room + ' (' + info.status + ', '
+      + pluralize(info.viewers, 'viewer') + ')')
+  }
+
+  info.on('update', update)
+
+  function update() {
+    timeout = null
+    header()
+    for (var i = 0; i < buffer.getRows(); i ++) {
+      if (dirty[i]) {
+        draw(i)
+      }
+    }
+    process.stdout.write(csi('m'))
+    process.stdout.write(csi(buffer.cursorY + 2, buffer.cursorX + 1, 'H'))
+    dirty = {}
+  }
+
+  function draw(row) {
+    var displayRow = row + 2
+    var last = null
+    process.stdout.write(csi(displayRow, 1, 'H') + csi(2, 'K'))
+    for (var j = 0; j < buffer.getCols(row); j ++) {
+      var cell = buffer.getCell(row, j)
+      var attr = cell[0]
+      if (last == null || last != attr) {
+        var bg = attr & 0x1ff
+          , fg = (attr >> 9) & 0x1ff
+          , flags = attr >> 18
+          , attrs = getAttrs(bg, fg, flags)
+        process.stdout.write(csi.apply(null, attrs))
+        last = attr
+      }
+      process.stdout.write(cell[1])
+    }
+  }
+
+  function getAttrs(bg, fg, flags) {
+    var attrs = [0]
+    if (flags & 1) attrs.push(1)
+    if (flags & 2) attrs.push(4)
+    if (bg < 256) attrs.push(48, 5, bg)
+    if (fg < 256) attrs.push(38, 5, fg)
+    attrs.push('m')
+    return attrs
+  }
+
+  return update
+
+}
+
+function record(socket, info) {
+
+  var defer = when.defer()
+  var child = terminal.create(command[0], command.slice(1), 1)
+  var term = new HeadlessTerminal(child.cols, child.rows)
+  var buffer = new ScreenBuffer()
+  display(child, buffer, info)
+
+  term.on('change', function() {
+    var operations = ScreenBuffer.diff(buffer, term.displayBuffer)
+    if (operations.length === 0) return
+    ScreenBuffer.patch(buffer, operations)
+    socket.emit('message', { command: 'patch', operations: operations })
+  })
+
+  child.on('resize', function() {
+    term.resize(child.cols, child.rows)
+  })
+
+  child.on('data', function(data) {
+    term.write(data)
+  })
+
+  child.on('end', function() {
+    setTimeout(function() {
+      drawHeader('livetty exit!!')
+      process.stdout.write('\n')
+    }, 100)
+    process.stdin.end()
+    defer.resolve()
+  })
+
+  return defer.promise
+
+}
+
+
+function log() {
+  console.log.apply(console, arguments)
+}
+

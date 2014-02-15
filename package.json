@@ -1,0 +1,23 @@
+{
+  "name": "livetty",
+  "version": "0.0.0",
+  "description": "Broadcast your terminal, live!",
+  "bin": {
+    "livetty": "./bin/livetty"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/dtinth/livetty-client.git"
+  },
+  "author": "Thai Pangsakulyanont <org.yi.dttvb@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "headless-terminal": "~0.4.0",
+    "pty.js": "~0.2.3",
+    "socket.io-client": "~0.9.16",
+    "screen-buffer": "~0.4.0"
+  }
+}
