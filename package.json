@@ -18,6 +18,7 @@
     "headless-terminal": "~0.4.0",
     "pty.js": "~0.2.3",
     "socket.io-client": "~0.9.16",
-    "screen-buffer": "~0.4.0"
+    "screen-buffer": "~0.4.0",
+    "when": "~2.8.0"
   }
 }
