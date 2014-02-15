@@ -1,6 +1,6 @@
 {
   "name": "livetty",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Broadcast your terminal, live!",
   "bin": {
     "livetty": "./bin/livetty"
